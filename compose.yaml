@@ -1,0 +1,97 @@
+# Local LiteLLM gateway with Microsoft SSO, PostgreSQL, and Redis.
+# Validate without printing secrets: docker compose config --quiet
+# Start: docker compose up -d
+
+services:
+  litellm:
+    container_name: litellm
+    image: ghcr.io/berriai/litellm:v1.110.0
+    command: ["--config", "/app/config/config.yaml", "--port", "4000"]
+    networks:
+      - litellm_network
+    ports:
+      # Local access; ngrok forwards to this port.
+      - "127.0.0.1:4000:4000"
+    volumes:
+      # Only config.yaml is loaded directly; the directory is read-only.
+      - ./config:/app/config:ro
+    environment:
+      NUM_WORKERS: "1"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY in .env}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:?Set MICROSOFT_CLIENT_ID in .env}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:?Set MICROSOFT_CLIENT_SECRET in .env}
+      MICROSOFT_TENANT: ${MICROSOFT_TENANT:?Set MICROSOFT_TENANT in .env}
+      PROXY_BASE_URL: ${PROXY_BASE_URL:?Set PROXY_BASE_URL in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/readiness', timeout=5).close()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Allow time for startup migrations.
+      start_period: 120s
+    restart: unless-stopped
+
+  db:
+    container_name: litellm-db
+    image: postgres:16.16
+    networks:
+      - litellm_network
+    environment:
+      # Applies on first initialization; changing these does not update an existing database.
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    container_name: litellm-redis
+    image: redis:7.4.12
+    networks:
+      - litellm_network
+    # Expand the password at runtime, then use the image entrypoint to drop root privileges.
+    command:
+      - sh
+      - -c
+      - 'exec /usr/local/bin/docker-entrypoint.sh redis-server --appendonly yes --appendfsync everysec --requirepass "$$REDIS_PASSWORD"'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -qx PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  litellm_network:
+    driver: bridge
+
+volumes:
+  # Both volumes persist until explicitly removed (e.g. docker compose down --volumes).
+  postgres_data:
+  redis_data:
