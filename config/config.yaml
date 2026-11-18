@@ -1,6 +1,7 @@
 # Main LiteLLM configuration, loaded by the Compose startup command.
-# Other YAML files are placeholders and are not loaded yet.
-model_list: []
+include:
+  - credentials.yaml
+  - models.yaml
 
 # Share routing counters and state through Redis. Response caching remains disabled.
 router_settings:

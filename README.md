@@ -23,14 +23,15 @@ compose.yaml
 docs/entra_sso.md      # Microsoft application and role setup
 config/
 ├── config.yaml        # Loaded by LiteLLM
-├── models.yaml        # Empty placeholder
+├── credentials.yaml   # Provider credentials referenced from environment variables
+├── models.yaml        # Chat, embedding, and reranking models
 ├── routing.yaml       # Empty placeholder
 ├── guardrails.yaml    # Empty placeholder
 └── mcp.yaml           # Empty placeholder
 scripts/               # Reserved for future tooling
 ```
 
-The `config/` directory is mounted read-only. Only `config/config.yaml` is loaded; sibling YAML files are not automatically merged. Models are currently unconfigured (`model_list: []`), so dashboard login can be tested before adding providers.
+The `config/` directory is mounted read-only. LiteLLM loads `config/config.yaml`, which includes `credentials.yaml` and `models.yaml`. The routing, guardrails, and MCP files remain unused placeholders. Models reference named credentials; secret values come from the container environment.
 
 ## 1. Prepare the environment
 
@@ -52,6 +53,8 @@ Fill in every empty value using the instructions in [.env.example](.env.example)
 | `DATABASE_URL` | Construct from the PostgreSQL settings |
 | `REDIS_PASSWORD` | Generate a separate random password |
 | `MICROSOFT_CLIENT_ID`, `MICROSOFT_TENANT`, `MICROSOFT_CLIENT_SECRET` | Microsoft Entra app registration |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION_NAME` | AWS credentials and region for standard Bedrock Runtime |
+| `JINA_AI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY` | Respective provider API consoles |
 | `PROXY_BASE_URL` | Browser-facing URL, without a trailing slash or path |
 
 Compose reads `.env` and passes each service its declared variables. Keep real credentials out of Git. Preserve `LITELLM_SALT_KEY` with database backups: changing it prevents decryption of existing encrypted credentials.
@@ -123,6 +126,34 @@ All three services should become healthy. Open `<PROXY_BASE_URL>/ui`, sign in wi
 
 First startup downloads the images and initializes the database. LiteLLM waits for PostgreSQL and Redis health checks before starting.
 
+## Configured models
+
+Use the public model name in API requests. Provider routes and credential references are defined in [config/models.yaml](config/models.yaml).
+
+| Provider | Public model name | Purpose |
+| --- | --- | --- |
+| AWS Bedrock | `nova-2-lite` | Chat |
+| AWS Bedrock | `nova-multimodal-embeddings` | Multimodal embeddings |
+| Jina AI | `jina-embeddings-v5-text-small` | Text embeddings |
+| Jina AI | `jina-reranker-v3.5` | Reranking |
+| OpenAI | `gpt-5-mini` | Chat |
+| OpenAI | `text-embedding-3-small` | Text embeddings |
+| OpenAI | `text-embedding-3-large` | Text embeddings |
+| Anthropic | `claude-haiku-5-5` | Chat |
+| Anthropic | `claude-sonnet-5-5` | Chat |
+| Cohere | `cohere-embed-v5.0-pro` | Embeddings |
+| Cohere | `cohere-rerank-v5.0-pro` | Reranking |
+
+Chat models use `/v1/chat/completions`, embedding models use `/v1/embeddings`, and rerankers use `/v1/rerank`. Embedding input formats and query/document parameters vary by provider; use the same embedding model and dimensions when indexing and querying a vector collection.
+
+Nova uses standard Bedrock Runtime. Nova 2 Lite uses the US inference profile and defaults to a 4,096-token output limit; configure a supported US AWS region such as `us-east-1`. Nova multimodal embeddings uses its regional model ID directly.
+
+OpenRouter credentials are available, but no OpenRouter models are configured. Speech models are not configured.
+
+GPT-5 mini is retained as requested. OpenAI lists its shutdown date as December 11, 2026; plan its replacement before then. See [OpenAI deprecations](https://developers.openai.com/api/docs/deprecations).
+
+The deployment was verified to load all 11 models. Listing a model does not verify provider credentials, account access, quotas, or successful inference; those require a request to each provider.
+
 ## Everyday commands
 
 | Command | Action |
@@ -130,6 +161,7 @@ First startup downloads the images and initializes the database. LiteLLM waits f
 | `docker compose ps` | Show service status |
 | `docker compose logs -f --tail=100` | Follow recent service logs |
 | `docker compose logs -f --tail=100 litellm` | Follow gateway logs |
+| `docker compose up -d --force-recreate litellm` | Recreate the gateway with current configuration and environment |
 | `docker compose restart litellm` | Reload changes to the mounted LiteLLM configuration |
 | `docker compose up -d --wait --wait-timeout 180` | Apply Compose or `.env` changes |
 | `docker compose down` | Remove containers and network while retaining data volumes |
