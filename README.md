@@ -1,6 +1,6 @@
 # LiteLLM server
 
-A local LiteLLM gateway with Microsoft Entra SSO, PostgreSQL, and Redis. Docker Compose runs the services; ngrok optionally provides HTTPS access from another computer.
+A local LiteLLM gateway for 10 AWS Bedrock models, two Jina AI models, and the managed AWS MCP server. Microsoft Entra provides dashboard SSO; PostgreSQL stores gateway data and Redis shares routing state. Docker Compose runs the services, and ngrok optionally provides HTTPS access from another computer.
 
 ## Stack
 
@@ -27,15 +27,15 @@ config/
 ├── models.yaml        # Chat, embedding, and reranking models
 ├── routing.yaml       # Empty placeholder
 ├── guardrails.yaml    # Empty placeholder
-└── mcp.yaml           # Empty placeholder
+└── mcp.yaml           # Managed AWS MCP server
 scripts/               # Reserved for future tooling
 ```
 
-The `config/` directory is mounted read-only. LiteLLM loads `config/config.yaml`, which includes `credentials.yaml` and `models.yaml`. The routing, guardrails, and MCP files remain unused placeholders. Models reference named credentials; secret values come from the container environment.
+The `config/` directory is mounted read-only. LiteLLM loads `config/config.yaml`, which includes `credentials.yaml`, `models.yaml`, and `mcp.yaml`. The routing and guardrails files remain unused placeholders. Models reference named credentials; secret values come from the container environment.
 
 ## 1. Prepare the environment
 
-Install Docker with Compose v2 and OpenSSL. For remote testing, also install and authenticate ngrok. Local Python, uv, and Make are not required to run this stack.
+Install Docker with Compose v2 or newer and OpenSSL. For remote testing, also install and authenticate ngrok. Local Python, uv, and Make are not required to run this stack.
 
 Create `.env` only if it does not already exist:
 
@@ -44,7 +44,7 @@ cp -n .env.example .env
 chmod 600 .env
 ```
 
-Fill in every empty value using the instructions in [.env.example](.env.example):
+Fill in every empty value using the instructions in [.env.example](.env.example). Compose rejects missing or empty required values, including `JINA_AI_API_KEY`:
 
 | Variables | Source |
 | --- | --- |
@@ -53,11 +53,15 @@ Fill in every empty value using the instructions in [.env.example](.env.example)
 | `DATABASE_URL` | Construct from the PostgreSQL settings |
 | `REDIS_PASSWORD` | Generate a separate random password |
 | `MICROSOFT_CLIENT_ID`, `MICROSOFT_TENANT`, `MICROSOFT_CLIENT_SECRET` | Microsoft Entra app registration |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION_NAME` | AWS credentials and region for standard Bedrock Runtime |
-| `JINA_AI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `COHERE_API_KEY` | Respective provider API consoles |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION_NAME` | AWS identity for Bedrock and AWS MCP; use `us-east-1` for this setup |
+| `JINA_AI_API_KEY` | Jina AI API console |
 | `PROXY_BASE_URL` | Browser-facing URL, without a trailing slash or path |
 
 Compose reads `.env` and passes each service its declared variables. Keep real credentials out of Git. Preserve `LITELLM_SALT_KEY` with database backups: changing it prevents decryption of existing encrypted credentials.
+
+### Temporary AWS credentials
+
+The current Compose configuration passes an AWS access key and secret key. If these are temporary credentials, also set `AWS_SESSION_TOKEN` in `.env`, pass it through the LiteLLM service's `environment` in `compose.yaml`, and add `aws_session_token: os.environ/AWS_SESSION_TOKEN` to both the Bedrock credential values and the AWS MCP entry. Refresh all temporary credential values together and recreate the gateway container.
 
 ### Database connection URL
 
@@ -126,33 +130,83 @@ All three services should become healthy. Open `<PROXY_BASE_URL>/ui`, sign in wi
 
 First startup downloads the images and initializes the database. LiteLLM waits for PostgreSQL and Redis health checks before starting.
 
-## Configured models
+## Providers and models
 
-Use the public model name in API requests. Provider routes and credential references are defined in [config/models.yaml](config/models.yaml).
+Standard AWS Bedrock and Jina AI credentials are configured. Named credentials in [config/credentials.yaml](config/credentials.yaml) reference environment variables; model routes in [config/models.yaml](config/models.yaml) reference those credentials.
 
 | Provider | Public model name | Purpose |
 | --- | --- | --- |
 | AWS Bedrock | `nova-2-lite` | Chat |
 | AWS Bedrock | `nova-multimodal-embeddings` | Multimodal embeddings |
+| AWS Bedrock | `gpt-5.6-sol` | Chat |
+| AWS Bedrock | `gpt-5.6-terra` | Chat |
+| AWS Bedrock | `gpt-5.6-luna` | Chat |
+| AWS Bedrock | `claude-haiku-5-5` | Chat |
+| AWS Bedrock | `claude-sonnet-5-5` | Chat |
+| AWS Bedrock | `claude-opus-5-5` | Chat |
+| AWS Bedrock | `cohere-embed-v4` | Embeddings |
+| AWS Bedrock | `cohere-rerank-v3.5` | Reranking |
 | Jina AI | `jina-embeddings-v5-text-small` | Text embeddings |
 | Jina AI | `jina-reranker-v3.5` | Reranking |
-| OpenAI | `gpt-5-mini` | Chat |
-| OpenAI | `text-embedding-3-small` | Text embeddings |
-| OpenAI | `text-embedding-3-large` | Text embeddings |
-| Anthropic | `claude-haiku-5-5` | Chat |
-| Anthropic | `claude-sonnet-5-5` | Chat |
-| Cohere | `cohere-embed-v5.0-pro` | Embeddings |
-| Cohere | `cohere-rerank-v5.0-pro` | Reranking |
 
-Chat models use `/v1/chat/completions`, embedding models use `/v1/embeddings`, and rerankers use `/v1/rerank`. Embedding input formats and query/document parameters vary by provider; use the same embedding model and dimensions when indexing and querying a vector collection.
+Nova 2 Lite, GPT-5.6, and Claude 5.5 use US inference profiles and default to a 4,096-token output limit. Configure a supported US AWS region such as `us-east-1`. Nova and Cohere embeddings and Cohere reranking use regional model IDs. Cohere reranking requires a foundation-model ARN; this configuration pins its ARN and region to `us-east-1`. All 10 AWS model routes use the `bedrock/` prefix and the `aws-bedrock` credential; the two Jina routes use `jina_ai/`.
 
-Nova uses standard Bedrock Runtime. Nova 2 Lite uses the US inference profile and defaults to a 4,096-token output limit; configure a supported US AWS region such as `us-east-1`. Nova multimodal embeddings uses its regional model ID directly.
+Use the public model names with `/v1/chat/completions`, `/v1/embeddings`, or `/v1/rerank`, depending on the model's purpose. Listing a model does not verify provider permissions, quotas, or successful inference.
 
-OpenRouter credentials are available, but no OpenRouter models are configured. Speech models are not configured.
+Bedrock Mantle is not configured. Direct OpenAI, Anthropic, Cohere, and OpenRouter are not configured. Speech models are not configured.
 
-GPT-5 mini is retained as requested. OpenAI lists its shutdown date as December 11, 2026; plan its replacement before then. See [OpenAI deprecations](https://developers.openai.com/api/docs/deprecations).
+## Model access groups
 
-The deployment was verified to load all 11 models. Listing a model does not verify provider credentials, account access, quotas, or successful inference; those require a request to each provider.
+Each model has one `model_info.access_groups` entry in `config/models.yaml`. These are independent permission groups, not an inheritance hierarchy.
+
+| Group | Public model names |
+| --- | --- |
+| `standard_models` | `nova-2-lite`, `gpt-5.6-luna`, `claude-haiku-5-5` |
+| `reasoning_models` | `gpt-5.6-terra`, `claude-sonnet-5-5` |
+| `premium_models` | `gpt-5.6-sol`, `claude-opus-5-5` |
+| `embedding_models` | `nova-multimodal-embeddings`, `cohere-embed-v4`, `jina-embeddings-v5-text-small` |
+| `reranker_models` | `cohere-rerank-v3.5`, `jina-reranker-v3.5` |
+
+Grant the intended group names through a team's or virtual key's Models setting, or its `models` field in the management API. For example, a team can receive:
+
+```json
+{
+  "team_alias": "developers",
+  "models": ["standard_models", "embedding_models", "reranker_models"]
+}
+```
+
+This is an example `/team/new` request body, not a YAML section. Team membership and key assignments are stored in the database and have not been provisioned by these files. Entra app roles control dashboard privileges; assigning an Entra role does not assign these model groups.
+
+Group labels alone do not restrict existing unrestricted keys or teams. Review direct model grants, wildcard grants, and group grants together. Test access using a restricted virtual key, rather than the master key: an allowed model should succeed, and a model outside its permissions should be rejected.
+
+See [Model Access Groups](https://docs.litellm.ai/docs/proxy/model_access_groups) and [LLM access](https://docs.litellm.ai/docs/proxy/access_management/llm).
+
+## MCP servers
+
+The managed AWS MCP server is configured in [config/mcp.yaml](config/mcp.yaml) at `https://aws-mcp.us-east-1.api.aws/mcp`. LiteLLM signs requests with SigV4 using the existing AWS environment credentials, service name `aws-mcp`, and signing region `us-east-1`.
+
+This is a shared AWS identity, not the dashboard user's Microsoft identity. AWS tool operations are limited by that identity's IAM permissions. Bedrock permissions alone do not grant access to unrelated AWS services. Assign MCP access to the intended teams or keys separately from model access groups.
+
+If using temporary AWS credentials, also pass `AWS_SESSION_TOKEN` through Compose and add `aws_session_token: os.environ/AWS_SESSION_TOKEN` to the MCP server entry. Configuration does not establish that the remote connection or tool execution has succeeded.
+
+GitHub MCP is a useful optional addition for repositories, issues, and pull requests, but is not configured yet. It needs GitHub OAuth or an appropriately scoped access token.
+
+References: [AWS MCP setup](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html), [LiteLLM SigV4 configuration](https://docs.litellm.ai/docs/mcp_aws_sigv4), [GitHub MCP authentication](https://github.com/github/github-mcp-server/blob/main/docs/host-integration.md).
+
+## Verification status
+
+The configuration has been checked for valid YAML, unique model names, credential references, provider routing, and the MCP include. The five model groups cover all 12 models. These checks do not establish successful provider authentication or tool execution.
+
+After filling `.env` and deploying the current files:
+
+1. Confirm all three services are healthy and Microsoft SSO works.
+2. Verify the model list contains all 12 public names.
+3. Make a small request to each model using the appropriate endpoint; these calls can incur provider charges.
+4. Assign groups to teams or keys and verify both allowed and denied requests.
+5. Verify AWS MCP tool discovery and an intended read-only tool call before using operations that change AWS resources.
+
+The current model routes, group permissions, and AWS MCP connection have not been verified end to end. Previous successful deployment checks used an earlier model configuration.
 
 ## Everyday commands
 
@@ -184,7 +238,7 @@ Use ordinary `docker compose down` for routine shutdowns. A Docker-wide prune is
 
 After deleting the database volume, PostgreSQL initializes a temporary server, stops it, and starts the normal server. That shutdown sequence is expected.
 
-With this LiteLLM version, first-start checks can also log `relation does not exist` for `_prisma_migrations` and reporting views before creating them. These messages occurred in our fresh-start tests; all referenced objects subsequently existed and the services became healthy.
+With this LiteLLM version, first-start checks can also log `relation does not exist` for `_prisma_migrations` and reporting views before creating them. These messages can occur during initial schema setup; check that initialization finishes and the services become healthy.
 
 If missing-relation errors continue after initialization, or LiteLLM fails its health check, inspect the LiteLLM logs for migration failures. Do not assume persistent errors are harmless or delete the database as the first troubleshooting step.
 

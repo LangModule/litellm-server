@@ -31,10 +31,6 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?Set AWS_SECRET_ACCESS_KEY in .env}
       AWS_REGION_NAME: ${AWS_REGION_NAME:?Set AWS_REGION_NAME in .env}
       JINA_AI_API_KEY: ${JINA_AI_API_KEY:?Set JINA_AI_API_KEY in .env}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY in .env}
-      COHERE_API_KEY: ${COHERE_API_KEY:?Set COHERE_API_KEY in .env}
     depends_on:
       db:
         condition: service_healthy

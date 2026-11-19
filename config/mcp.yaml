@@ -1,0 +1,11 @@
+# Managed AWS MCP server. Requests use the shared AWS identity from .env.
+mcp_servers:
+  aws:
+    url: https://aws-mcp.us-east-1.api.aws/mcp
+    transport: http
+    auth_type: aws_sigv4
+    aws_region_name: us-east-1
+    aws_service_name: aws-mcp
+    aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+    aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+    description: AWS documentation, guidance, and AWS API tools

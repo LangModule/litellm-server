@@ -2,6 +2,7 @@
 include:
   - credentials.yaml
   - models.yaml
+  - mcp.yaml
 
 # Share routing counters and state through Redis. Response caching remains disabled.
 router_settings:
